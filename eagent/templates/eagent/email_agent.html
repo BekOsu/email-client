@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Email Agent</title>
+</head>
+<body>
+    <h1>Email Agent</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Submit</button>
+    </form>
+
+    {% if clean_output %}
+        <h2>Results</h2>
+        <pre>{{ clean_output }}</pre>
+    {% endif %}
+</body>
+</html>
