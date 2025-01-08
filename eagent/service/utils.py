@@ -180,13 +180,40 @@ def safe_run_email_agent(input_command, retries=3, backoff=1.5):
     raise RuntimeError("Exceeded maximum retries for rate limit errors.")
 
 
+def format_email_summary(response: dict) -> str:
+    """
+    Format the email summary into a clean, readable text format.
+    """
+    output = response.get("output", "")
+    if not output:
+        return "No emails to summarize."
+
+    # Split the output into lines and clean up formatting
+    formatted_output = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line:
+            # Add indentation for categories
+            if line.startswith("###"):
+                formatted_output.append(f"\n{line.replace('###', '').strip()}")  # Remove '###'
+            else:
+                formatted_output.append(f"  {line}")
+
+    return "\n".join(formatted_output)
+
+
 if __name__ == "__main__":
     input_command = {
-        "input": "Summarize the emails I received the last 20 days in great detail. Provide comprehensive insights on all messages."}
+        "input": "Summarize the emails I received the last 2 days in great detail. Provide comprehensive insights on all messages."
+    }
     logger.info("Running email agent...")
     try:
         response = safe_run_email_agent(input_command)
         logger.info("Agent Response: %s", response)
-        print("Agent Response:", response)
+
+        # Format and print the summary
+        clean_output = format_email_summary(response)
+        print("Cleaned Email Summary:\n", clean_output)
     except Exception as e:
         logger.error("Failed to execute email agent: %s", str(e))
+
