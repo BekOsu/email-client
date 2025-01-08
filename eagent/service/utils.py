@@ -21,6 +21,7 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 model_name = os.getenv("OPENAI_API_MODEL", "gpt-3.5-turbo")
 api_key = os.getenv("OPENAI_API_KEY")
@@ -53,17 +54,18 @@ def calculate_token_count(input_data: dict, model: str = "gpt-4o-mini") -> int:
     return token_count
 
 
-def validate_and_truncate_input(input_data: dict, model: str = "gpt-3.5-turbo") -> dict:
+def validate_and_truncate_input(input_data: dict, model: str = "gpt-4o-mini") -> dict:
     """
     Validate and truncate input to ensure it stays within the token limit.
     """
+    encoding = tiktoken.encoding_for_model(model)
     token_count = calculate_token_count(input_data, model)
     if token_count > MAX_TOKENS:
         logger.warning(
             f"Input exceeds token limit ({token_count} tokens). Truncating input to fit within {MAX_TOKENS} tokens."
         )
-        # Simplify or truncate the input as needed
-        input_data["input"] = input_data["input"][:MAX_TOKENS]  # Example truncation
+        # Truncate the input content at the token level
+        input_data["input"] = encoding.decode(encoding.encode(input_data["input"])[:MAX_TOKENS])
     return input_data
 
 
@@ -76,7 +78,21 @@ def setup_gmail_toolkit():
     )
     api_resource = build_resource_service(credentials=credentials)
     toolkit = GmailToolkit(api_resource=api_resource)
+
+    tools = toolkit.get_tools()
+    logger.info("Number of tools loaded: %d", len(tools))
+    for tool in tools:
+        logger.info("Tool: %s", tool.name)
+        # Log tool names without trying to modify unsupported attributes
+
     return toolkit
+
+
+def process_tool_output(output: str, max_length: int = 1000) -> str:
+    """
+    Truncate or process tool output to fit within the token limit.
+    """
+    return output[:max_length] if output else output
 
 
 # Create agent executor
@@ -86,25 +102,66 @@ def get_agent_executor():
     base_prompt = hub.pull("langchain-ai/openai-functions-template")
     prompt = base_prompt.partial(instructions=instructions)
     llm = ChatOpenAI(model_name=model_name, temperature=0, openai_api_key=api_key)
+
     agent = create_openai_functions_agent(llm, toolkit.get_tools(), prompt)
+
+    # Add debugging logs for tool outputs
+    for tool in toolkit.get_tools():
+        logger.info("Inspecting tool: %s", tool.name)
+
     return AgentExecutor(agent=agent, tools=toolkit.get_tools(), verbose=False)
+
+
+def truncate_messages(messages, max_tokens=4000):
+    """
+    Truncate messages to ensure they fit within the token limit.
+    """
+    encoding = tiktoken.encoding_for_model(model_name)
+    total_tokens = 0
+    truncated_messages = []
+
+    for message in reversed(messages):  # Start with the most recent messages
+        message_tokens = len(encoding.encode(message.get("content", "")))
+        if total_tokens + message_tokens > max_tokens:
+            break
+        truncated_messages.insert(0, message)
+        total_tokens += message_tokens
+
+    logger.info("Truncated messages to fit within %d tokens.", max_tokens)
+    return truncated_messages
 
 
 @traceable(run_type="llm", name="Email Agent Execution")
 def run_email_agent(input_command):
     """
-    Run the email agent with token tracking and validation.
+    Run the email agent with token tracking, validation, and truncation.
     """
-    # Validate and truncate input to prevent long tokens
     input_command = validate_and_truncate_input(input_command)
-
     agent_executor = get_agent_executor()
+
     with get_openai_callback() as cb:
-        result = agent_executor.invoke(input_command)
-        logger.info("Total tokens used: %s", cb.total_tokens)
-        logger.info("Prompt tokens used: %s", cb.prompt_tokens)
-        logger.info("Completion tokens used: %s", cb.completion_tokens)
-        logger.info("Total cost (USD): %s", cb.total_cost)
+        try:
+            # Execute the agent
+            result = agent_executor.invoke(input_command)
+
+            # Dynamically process tool outputs
+            if isinstance(result, dict):  # Check if result is structured
+                for key, value in result.items():
+                    if isinstance(value, str):
+                        result[key] = process_tool_output(value)
+            elif isinstance(result, str):
+                result = process_tool_output(result)
+
+            logger.info("Total tokens used: %s", cb.total_tokens)
+            logger.info("Prompt tokens used: %s", cb.prompt_tokens)
+            logger.info("Completion tokens used: %s", cb.completion_tokens)
+            logger.info("Total cost (USD): %s", cb.total_cost)
+        except ValueError as e:
+            logger.error("Input validation failed: %s", str(e))
+            raise
+        except Exception as e:
+            logger.error("Agent execution failed: %s", str(e))
+            raise
 
     return result
 
@@ -124,7 +181,8 @@ def safe_run_email_agent(input_command, retries=3, backoff=1.5):
 
 
 if __name__ == "__main__":
-    input_command = {"input": "Summarize the emails I received the last 20 days in great detail. Provide comprehensive insights on all messages."}
+    input_command = {
+        "input": "Summarize the emails I received the last 20 days in great detail. Provide comprehensive insights on all messages."}
     logger.info("Running email agent...")
     try:
         response = safe_run_email_agent(input_command)
