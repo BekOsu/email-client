@@ -1,6 +1,6 @@
 from django.urls import path
-from .views import check_emails
+from . import views
 
 urlpatterns = [
-    path("check-emails/", check_emails, name="check_emails"),
+    path("", views.email_agent_view, name="email_agent"),
 ]
